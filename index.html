@@ -14,6 +14,7 @@
     --accent: var(--tg-theme-button-color, #2f80ed);
     --accent-text: var(--tg-theme-button-text-color, #ffffff);
     --danger: #d64545;
+    --ok: #2e9e5b;
     --line: color-mix(in srgb, var(--hint) 28%, transparent);
   }
 
@@ -21,7 +22,7 @@
 
   body {
     margin: 0;
-    padding: 16px 16px 88px;
+    padding: 16px 16px 92px;
     background: var(--bg);
     color: var(--text);
     font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -44,7 +45,6 @@
   }
 
   input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-
   textarea { resize: vertical; min-height: 64px; }
 
   .field { margin-bottom: 16px; }
@@ -61,7 +61,6 @@
   .note.empty { color: var(--hint); font-size: 13px; }
 
   .card { background: var(--card); border-radius: 12px; padding: 13px; margin-bottom: 11px; }
-
   .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 
   .num {
@@ -112,15 +111,19 @@
 
   .btn-primary { background: var(--accent); color: var(--accent-text); padding: 12px; font-weight: 600; }
   .btn-secondary { background: var(--card); color: var(--text); padding: 12px; }
+  button:disabled { opacity: .55; cursor: default; }
 
   .error { color: var(--danger); font-size: 13px; min-height: 18px; }
-
   .section-title { font-size: 13px; color: var(--hint); margin: 20px 0 8px; }
-
+  .status { color: var(--hint); font-size: 14px; }
   .fatal { color: var(--danger); font-size: 14px; }
+  .done { color: var(--ok); font-size: 15px; font-weight: 600; }
 </style>
 </head>
 <body>
+
+<p class="status" id="status">Загружаю тренировку…</p>
+<p class="fatal" id="fatal" hidden></p>
 
 <div id="app" hidden>
   <h1 id="complexTitle"></h1>
@@ -142,9 +145,7 @@
   </div>
 </div>
 
-<p class="fatal" id="fatal" hidden></p>
-
-<div class="bar">
+<div class="bar" id="bar" hidden>
   <div class="error" id="error"></div>
   <button class="btn-secondary" id="close">Закрыть</button>
   <button class="btn-primary" id="action" hidden></button>
@@ -155,24 +156,16 @@ const tg = window.Telegram ? window.Telegram.WebApp : null;
 const mainButton = tg && tg.MainButton ? tg.MainButton : null;
 if (tg) { tg.ready(); tg.expand(); }
 
-const els = {
-  app: document.getElementById('app'),
-  fatal: document.getElementById('fatal'),
-  complexTitle: document.getElementById('complexTitle'),
-  dayTitle: document.getElementById('dayTitle'),
-  prevComment: document.getElementById('prevComment'),
-  weightField: document.getElementById('weightField'),
-  weight: document.getElementById('weight'),
-  exercises: document.getElementById('exercises'),
-  commentField: document.getElementById('commentField'),
-  comment: document.getElementById('comment'),
-  error: document.getElementById('error'),
-  action: document.getElementById('action'),
-};
+const els = {};
+['status','fatal','app','complexTitle','dayTitle','prevComment','weightField','weight',
+ 'exercises','commentField','comment','bar','error','action']
+  .forEach(id => els[id] = document.getElementById(id));
 
-let plan = null;         // что пришло из бота
-let startedAt = null;    // момент нажатия «Начать тренировку»
-let bodyWeight = null;
+let api = null;        // базовый адрес сервера бота
+let dayId = null;
+let plan = null;
+let sessionId = null;
+let busy = false;
 
 function haptic(type) {
   if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(type);
@@ -183,22 +176,44 @@ function showError(text) {
   if (text) haptic('error');
 }
 
-// --- разбор данных из ссылки ----------------------------------------------
+function fail(text) {
+  els.status.hidden = true;
+  els.fatal.hidden = false;
+  els.fatal.textContent = text;
+}
 
-function decodePayload(raw) {
-  let s = raw.replace(/-/g, '+').replace(/_/g, '/');
-  while (s.length % 4) s += '=';
-  const bin = atob(s);
-  const bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0));
-  return JSON.parse(new TextDecoder().decode(bytes));
+// --- обращения к боту ------------------------------------------------------
+
+async function callApi(path, options) {
+  const response = await fetch(api + path, Object.assign({
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Telegram-Init-Data': tg ? tg.initData : '',
+    },
+  }, options || {}));
+
+  let body = null;
+  try { body = await response.json(); } catch (e) { /* пустой ответ */ }
+
+  if (!response.ok) {
+    throw new Error((body && body.error) || ('сервер ответил ' + response.status));
+  }
+  return body;
+}
+
+function networkHint(err) {
+  // Самый частый случай: бот выключен или туннель не поднят.
+  if (err instanceof TypeError) return 'Бот недоступен. Проверь, что он запущен.';
+  return err.message;
 }
 
 // --- экран 1: перед тренировкой -------------------------------------------
 
 function renderPrevComment() {
-  if (plan.p) {
-    els.prevComment.innerHTML = '<div class="note"><div class="cap">Комментарий с прошлой тренировки</div><span></span></div>';
-    els.prevComment.querySelector('span').textContent = plan.p;
+  if (plan.previous_comment) {
+    els.prevComment.innerHTML =
+      '<div class="note"><div class="cap">Комментарий с прошлой тренировки</div><span></span></div>';
+    els.prevComment.querySelector('span').textContent = plan.previous_comment;
   } else {
     els.prevComment.innerHTML =
       '<div class="note empty">Для предыдущей тренировки дополнительных комментариев нет.</div>';
@@ -208,7 +223,7 @@ function renderPrevComment() {
 function exerciseCard(exercise, index) {
   const card = document.createElement('div');
   card.className = 'card';
-  card.dataset.exerciseId = exercise.x;
+  card.dataset.exerciseId = exercise.exercise_id;
 
   const head = document.createElement('div');
   head.className = 'card-head';
@@ -216,108 +231,88 @@ function exerciseCard(exercise, index) {
   head.querySelector('.num').textContent = index + 1;
 
   const nameEl = head.querySelector('.ex-name');
-  nameEl.textContent = exercise.n;
-  if (exercise.m) {
+  nameEl.textContent = exercise.name;
+  if (exercise.muscle_group) {
     const muscle = document.createElement('span');
     muscle.className = 'muscle';
-    muscle.textContent = ' · ' + exercise.m;
+    muscle.textContent = ' · ' + exercise.muscle_group;
     nameEl.appendChild(muscle);
   }
   card.appendChild(head);
   return card;
 }
 
-function planRow(exercise) {
+function setsRow(exercise, mode) {
   const wrap = document.createElement('div');
   wrap.className = 'sets';
-  exercise.s.forEach(set => {
+
+  exercise.sets.forEach(set => {
     const el = document.createElement('div');
-    el.className = 'set';
-    el.innerHTML = '<span class="plan"></span>';
-    el.querySelector('.plan').textContent = set.n + ' × ' + set.r;
+    el.className = 'set' + (mode === 'prev' ? ' prev' : '');
+
+    if (mode === 'plan') {
+      el.innerHTML = '<span class="plan"></span>';
+      el.querySelector('.plan').textContent = set.set_number + ' × ' + set.reps;
+    } else if (mode === 'prev') {
+      el.innerHTML = '<span class="plan"></span><span class="unit">кг</span>';
+      el.querySelector('.plan').textContent =
+        set.set_number + ' × ' + set.reps + ' — ' + (set.previous_weight || 0);
+    } else {
+      el.innerHTML =
+        '<span class="plan"></span>' +
+        '<input type="number" inputmode="decimal" min="0" max="999" step="0.5" placeholder="0">' +
+        '<span class="unit">кг</span>';
+      el.querySelector('.plan').textContent = set.set_number + ' × ' + set.reps + ' —';
+      el.querySelector('input').dataset.setNumber = set.set_number;
+    }
     wrap.appendChild(el);
   });
   return wrap;
 }
 
+function caption(text) {
+  const el = document.createElement('div');
+  el.className = 'row-cap';
+  el.textContent = text;
+  return el;
+}
+
 function renderPreview() {
   els.exercises.innerHTML = '';
-  plan.e.forEach((exercise, index) => {
+  plan.exercises.forEach((exercise, index) => {
     const card = exerciseCard(exercise, index);
-    const cap = document.createElement('div');
-    cap.className = 'row-cap';
-    cap.textContent = 'Подходы / повторения';
-    card.appendChild(cap);
-    card.appendChild(planRow(exercise));
+    card.appendChild(caption('Подходы / повторения'));
+    card.appendChild(setsRow(exercise, 'plan'));
     els.exercises.appendChild(card);
   });
 }
 
 // --- экран 2: тренировка идёт ---------------------------------------------
 
-function prevRow(exercise) {
-  const wrap = document.createElement('div');
-  wrap.className = 'sets';
-  exercise.s.forEach(set => {
-    const el = document.createElement('div');
-    el.className = 'set prev';
-    el.innerHTML = '<span class="plan"></span><span class="unit">кг</span>';
-    el.querySelector('.plan').textContent = set.n + ' × ' + set.r + ' — ' + (set.w || 0);
-    wrap.appendChild(el);
-  });
-  return wrap;
-}
-
-function currentRow(exercise) {
-  const wrap = document.createElement('div');
-  wrap.className = 'sets';
-  exercise.s.forEach(set => {
-    const el = document.createElement('div');
-    el.className = 'set';
-    el.innerHTML =
-      '<span class="plan"></span>' +
-      '<input type="number" inputmode="decimal" min="0" max="999" step="0.5" placeholder="0">' +
-      '<span class="unit">кг</span>';
-    el.querySelector('.plan').textContent = set.n + ' × ' + set.r + ' —';
-    el.querySelector('input').dataset.setNumber = set.n;
-    el.querySelector('input').dataset.reps = set.r;
-    wrap.appendChild(el);
-  });
-  return wrap;
-}
-
 function renderWorkout() {
-  els.weightField.hidden = true;          // вес уже сохранён, больше не показываем
+  els.weightField.hidden = true;              // вес уже записан, больше не показываем
   els.commentField.hidden = false;
-
-  if (!plan.p) els.prevComment.innerHTML = '';   // нет прошлого комментария — нет и блока
+  if (!plan.previous_comment) els.prevComment.innerHTML = '';
 
   els.exercises.innerHTML = '';
-  plan.e.forEach((exercise, index) => {
+  plan.exercises.forEach((exercise, index) => {
     const card = exerciseCard(exercise, index);
-
-    const prevCap = document.createElement('div');
-    prevCap.className = 'row-cap';
-    prevCap.textContent = 'Подходы / повторения / вес (предыдущая тренировка)';
-    card.appendChild(prevCap);
-    card.appendChild(prevRow(exercise));
-
-    const curCap = document.createElement('div');
-    curCap.className = 'row-cap';
-    curCap.textContent = 'Подходы / повторения / вес (текущая тренировка)';
-    card.appendChild(curCap);
-    card.appendChild(currentRow(exercise));
-
+    card.appendChild(caption('Подходы / повторения / вес (предыдущая тренировка)'));
+    card.appendChild(setsRow(exercise, 'prev'));
+    card.appendChild(caption('Подходы / повторения / вес (текущая тренировка)'));
+    card.appendChild(setsRow(exercise, 'current'));
     els.exercises.appendChild(card);
   });
 }
 
-// --- действия --------------------------------------------------------------
+// --- кнопка действия -------------------------------------------------------
+
+let currentHandler = null;
 
 function setAction(text, handler) {
   if (mainButton) {
-    if (setAction.current) mainButton.offClick(setAction.current);
-    setAction.current = handler;
+    if (currentHandler) mainButton.offClick(currentHandler);
+    currentHandler = handler;
     mainButton.setText(text);
     mainButton.onClick(handler);
     mainButton.enable();
@@ -329,95 +324,138 @@ function setAction(text, handler) {
   }
 }
 
-function startWorkout() {
+function setBusy(on) {
+  busy = on;
+  if (mainButton) {
+    if (on) { mainButton.showProgress(true); mainButton.disable(); }
+    else { mainButton.hideProgress(); mainButton.enable(); }
+  } else {
+    els.action.disabled = on;
+  }
+}
+
+// --- действия --------------------------------------------------------------
+
+async function startWorkout() {
+  if (busy) return;
+
   const value = parseFloat(String(els.weight.value).replace(',', '.'));
   if (!Number.isFinite(value) || value < 30 || value > 300) {
     return showError('Укажи сегодняшний вес — число от 30 до 300 кг.');
   }
 
-  bodyWeight = Math.round(value * 10) / 10;
-  startedAt = new Date().toISOString();
   showError('');
-  haptic('success');
+  setBusy(true);
+  try {
+    const started = await callApi('/api/session/start', {
+      method: 'POST',
+      body: JSON.stringify({ day_id: dayId, body_weight_kg: Math.round(value * 10) / 10 }),
+    });
+    sessionId = started.session_id;
+  } catch (err) {
+    setBusy(false);
+    return showError('Не удалось начать тренировку. ' + networkHint(err));
+  }
 
+  setBusy(false);
+  haptic('success');
   renderWorkout();
   window.scrollTo(0, 0);
   setAction('Завершить тренировку', finishWorkout);
 }
 
-function finishWorkout() {
-  const exercises = [];
-
+function collectSets() {
+  const sets = [];
   for (const card of els.exercises.querySelectorAll('.card')) {
-    const sets = [];
+    const exerciseId = parseInt(card.dataset.exerciseId, 10);
     for (const input of card.querySelectorAll('input')) {
       const raw = String(input.value).replace(',', '.').trim();
       let weight = null;
       if (raw !== '') {
         weight = parseFloat(raw);
-        if (!Number.isFinite(weight) || weight < 0 || weight > 999) {
-          return showError('Вес должен быть числом от 0 до 999 кг.');
-        }
+        if (!Number.isFinite(weight) || weight < 0 || weight > 999) return null;
         weight = Math.round(weight * 10) / 10;
       }
       sets.push({
-        n: parseInt(input.dataset.setNumber, 10),
-        r: parseInt(input.dataset.reps, 10),
-        w: weight,
+        exercise_id: exerciseId,
+        set_number: parseInt(input.dataset.setNumber, 10),
+        weight_kg: weight,
       });
     }
-    exercises.push({ x: parseInt(card.dataset.exerciseId, 10), s: sets });
   }
-
-  const payload = {
-    k: 'run',
-    i: plan.i,
-    s: startedAt,
-    f: new Date().toISOString(),
-    w: bodyWeight,
-    e: exercises,
-  };
-
-  const comment = els.comment.value.trim();
-  if (comment) payload.c = comment;
-
-  const json = JSON.stringify(payload);
-  if (json.length > 4096) {
-    return showError('Слишком много данных за раз (' + json.length + ' из 4096 байт).');
-  }
-
-  if (!tg) return showError('Страница открыта не из Telegram — отправить данные некуда.');
-  haptic('success');
-  tg.sendData(json);
+  return sets;
 }
 
-document.getElementById('close').onclick = () => {
-  // Ничего не записываем: пользователь просто заглянул.
+async function finishWorkout() {
+  if (busy) return;
+
+  const sets = collectSets();
+  if (sets === null) return showError('Вес должен быть числом от 0 до 999 кг.');
+
+  showError('');
+  setBusy(true);
+  try {
+    await callApi('/api/session/finish', {
+      method: 'POST',
+      body: JSON.stringify({
+        session_id: sessionId,
+        comment: els.comment.value.trim() || null,
+        sets: sets,
+      }),
+    });
+  } catch (err) {
+    setBusy(false);
+    return showError('Не удалось завершить тренировку. ' + networkHint(err));
+  }
+
+  haptic('success');
+  if (mainButton) mainButton.hide();
+  els.app.hidden = true;
+  els.bar.hidden = true;
+  els.status.hidden = false;
+  els.status.className = 'done';
+  els.status.textContent = 'Тренировка записана 💪';
+  setTimeout(() => { if (tg) tg.close(); }, 1200);
+}
+
+els.close.onclick = () => {
+  // До нажатия «Начать» в базе не появляется ничего.
   if (tg) tg.close(); else showError('Закрыть можно только внутри Telegram.');
 };
 
 // --- запуск ----------------------------------------------------------------
 
-function fail(text) {
-  els.fatal.hidden = false;
-  els.fatal.textContent = text;
+function readParams() {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  api = (params.get('api') || '').replace(/\/+$/, '');
+  dayId = parseInt(params.get('day'), 10);
+  return api && Number.isInteger(dayId);
 }
 
-try {
-  const raw = window.location.hash.slice(1);
-  if (!raw) throw new Error('в ссылке нет данных тренировки');
-  plan = decodePayload(raw);
-  if (!plan || !plan.i || !Array.isArray(plan.e)) throw new Error('данные повреждены');
+(async function init() {
+  if (!readParams()) {
+    return fail('В ссылке нет данных тренировки. Вернись в бота и открой день заново.');
+  }
+  if (!tg || !tg.initData) {
+    return fail('Страница открыта не из Telegram — данные загрузить нельзя.');
+  }
 
-  els.complexTitle.textContent = plan.c;
-  els.dayTitle.textContent = plan.d;
+  try {
+    plan = await callApi('/api/day/' + dayId);
+  } catch (err) {
+    return fail('Не удалось загрузить тренировку. ' + networkHint(err));
+  }
+
+  els.complexTitle.textContent = plan.workout_title;
+  els.dayTitle.textContent = plan.day_title;
   renderPrevComment();
   renderPreview();
+
+  els.status.hidden = true;
   els.app.hidden = false;
+  els.bar.hidden = false;
   setAction('Начать тренировку', startWorkout);
-} catch (err) {
-  fail('Не удалось открыть тренировку: ' + err.message + '. Вернись в бота и открой день заново.');
-}
+})();
 </script>
 
 </body>
