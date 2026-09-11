@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Тренировка</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #14181f);
+    --hint: var(--tg-theme-hint-color, #77818f);
+    --card: var(--tg-theme-secondary-bg-color, #f2f4f7);
+    --accent: var(--tg-theme-button-color, #2f80ed);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --danger: #d64545;
+    --line: color-mix(in srgb, var(--hint) 28%, transparent);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 16px 16px 88px;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  h2 { font-size: 15px; font-weight: 500; color: var(--hint); margin: 0 0 18px; }
+
+  label { display: block; font-size: 13px; color: var(--hint); margin-bottom: 5px; }
+
+  input, textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+  }
+
+  input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  textarea { resize: vertical; min-height: 64px; }
+
+  .field { margin-bottom: 16px; }
+
+  .note {
+    background: var(--card);
+    border-radius: 10px;
+    padding: 11px 13px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+
+  .note .cap { font-size: 12px; color: var(--hint); margin-bottom: 4px; }
+  .note.empty { color: var(--hint); font-size: 13px; }
+
+  .card { background: var(--card); border-radius: 12px; padding: 13px; margin-bottom: 11px; }
+
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+
+  .num {
+    flex: none;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-text);
+    font-size: 12px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .ex-name { font-weight: 600; font-size: 14px; }
+  .muscle { color: var(--hint); font-weight: 400; }
+
+  .row-cap { font-size: 11px; color: var(--hint); margin: 9px 0 5px; }
+
+  .sets { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  .set {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .set.prev { opacity: .75; }
+  .set .plan { color: var(--hint); }
+  .set input { width: 48px; padding: 3px 4px; text-align: center; border-radius: 6px; font-size: 13px; }
+  .set .unit { color: var(--hint); font-size: 12px; }
+
+  button { font: inherit; font-family: inherit; cursor: pointer; border: none; border-radius: 10px; }
+
+  .bar {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: var(--bg);
+    border-top: 1px solid var(--line);
+    display: grid;
+    gap: 8px;
+  }
+
+  .btn-primary { background: var(--accent); color: var(--accent-text); padding: 12px; font-weight: 600; }
+  .btn-secondary { background: var(--card); color: var(--text); padding: 12px; }
+
+  .error { color: var(--danger); font-size: 13px; min-height: 18px; }
+
+  .section-title { font-size: 13px; color: var(--hint); margin: 20px 0 8px; }
+
+  .fatal { color: var(--danger); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div id="app" hidden>
+  <h1 id="complexTitle"></h1>
+  <h2 id="dayTitle"></h2>
+
+  <div id="prevComment"></div>
+
+  <div class="field" id="weightField">
+    <label for="weight">Укажите свой сегодняшний вес, кг</label>
+    <input id="weight" type="number" inputmode="decimal" min="30" max="300" step="0.1" placeholder="82.5">
+  </div>
+
+  <div class="section-title">Упражнения</div>
+  <div id="exercises"></div>
+
+  <div class="field" id="commentField" hidden>
+    <label for="comment">Оставить комментарий к тренировке (необязательно)</label>
+    <textarea id="comment" maxlength="500" placeholder="Как прошло, что поменять в следующий раз"></textarea>
+  </div>
+</div>
+
+<p class="fatal" id="fatal" hidden></p>
+
+<div class="bar">
+  <div class="error" id="error"></div>
+  <button class="btn-secondary" id="close">Закрыть</button>
+  <button class="btn-primary" id="action" hidden></button>
+</div>
+
+<script>
+const tg = window.Telegram ? window.Telegram.WebApp : null;
+const mainButton = tg && tg.MainButton ? tg.MainButton : null;
+if (tg) { tg.ready(); tg.expand(); }
+
+const els = {
+  app: document.getElementById('app'),
+  fatal: document.getElementById('fatal'),
+  complexTitle: document.getElementById('complexTitle'),
+  dayTitle: document.getElementById('dayTitle'),
+  prevComment: document.getElementById('prevComment'),
+  weightField: document.getElementById('weightField'),
+  weight: document.getElementById('weight'),
+  exercises: document.getElementById('exercises'),
+  commentField: document.getElementById('commentField'),
+  comment: document.getElementById('comment'),
+  error: document.getElementById('error'),
+  action: document.getElementById('action'),
+};
+
+let plan = null;         // что пришло из бота
+let startedAt = null;    // момент нажатия «Начать тренировку»
+let bodyWeight = null;
+
+function haptic(type) {
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(type);
+}
+
+function showError(text) {
+  els.error.textContent = text || '';
+  if (text) haptic('error');
+}
+
+// --- разбор данных из ссылки ----------------------------------------------
+
+function decodePayload(raw) {
+  let s = raw.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+// --- экран 1: перед тренировкой -------------------------------------------
+
+function renderPrevComment() {
+  if (plan.p) {
+    els.prevComment.innerHTML = '<div class="note"><div class="cap">Комментарий с прошлой тренировки</div><span></span></div>';
+    els.prevComment.querySelector('span').textContent = plan.p;
+  } else {
+    els.prevComment.innerHTML =
+      '<div class="note empty">Для предыдущей тренировки дополнительных комментариев нет.</div>';
+  }
+}
+
+function exerciseCard(exercise, index) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.dataset.exerciseId = exercise.x;
+
+  const head = document.createElement('div');
+  head.className = 'card-head';
+  head.innerHTML = '<span class="num"></span><span class="ex-name"></span>';
+  head.querySelector('.num').textContent = index + 1;
+
+  const nameEl = head.querySelector('.ex-name');
+  nameEl.textContent = exercise.n;
+  if (exercise.m) {
+    const muscle = document.createElement('span');
+    muscle.className = 'muscle';
+    muscle.textContent = ' · ' + exercise.m;
+    nameEl.appendChild(muscle);
+  }
+  card.appendChild(head);
+  return card;
+}
+
+function planRow(exercise) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sets';
+  exercise.s.forEach(set => {
+    const el = document.createElement('div');
+    el.className = 'set';
+    el.innerHTML = '<span class="plan"></span>';
+    el.querySelector('.plan').textContent = set.n + ' × ' + set.r;
+    wrap.appendChild(el);
+  });
+  return wrap;
+}
+
+function renderPreview() {
+  els.exercises.innerHTML = '';
+  plan.e.forEach((exercise, index) => {
+    const card = exerciseCard(exercise, index);
+    const cap = document.createElement('div');
+    cap.className = 'row-cap';
+    cap.textContent = 'Подходы / повторения';
+    card.appendChild(cap);
+    card.appendChild(planRow(exercise));
+    els.exercises.appendChild(card);
+  });
+}
+
+// --- экран 2: тренировка идёт ---------------------------------------------
+
+function prevRow(exercise) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sets';
+  exercise.s.forEach(set => {
+    const el = document.createElement('div');
+    el.className = 'set prev';
+    el.innerHTML = '<span class="plan"></span><span class="unit">кг</span>';
+    el.querySelector('.plan').textContent = set.n + ' × ' + set.r + ' — ' + (set.w || 0);
+    wrap.appendChild(el);
+  });
+  return wrap;
+}
+
+function currentRow(exercise) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sets';
+  exercise.s.forEach(set => {
+    const el = document.createElement('div');
+    el.className = 'set';
+    el.innerHTML =
+      '<span class="plan"></span>' +
+      '<input type="number" inputmode="decimal" min="0" max="999" step="0.5" placeholder="0">' +
+      '<span class="unit">кг</span>';
+    el.querySelector('.plan').textContent = set.n + ' × ' + set.r + ' —';
+    el.querySelector('input').dataset.setNumber = set.n;
+    el.querySelector('input').dataset.reps = set.r;
+    wrap.appendChild(el);
+  });
+  return wrap;
+}
+
+function renderWorkout() {
+  els.weightField.hidden = true;          // вес уже сохранён, больше не показываем
+  els.commentField.hidden = false;
+
+  if (!plan.p) els.prevComment.innerHTML = '';   // нет прошлого комментария — нет и блока
+
+  els.exercises.innerHTML = '';
+  plan.e.forEach((exercise, index) => {
+    const card = exerciseCard(exercise, index);
+
+    const prevCap = document.createElement('div');
+    prevCap.className = 'row-cap';
+    prevCap.textContent = 'Подходы / повторения / вес (предыдущая тренировка)';
+    card.appendChild(prevCap);
+    card.appendChild(prevRow(exercise));
+
+    const curCap = document.createElement('div');
+    curCap.className = 'row-cap';
+    curCap.textContent = 'Подходы / повторения / вес (текущая тренировка)';
+    card.appendChild(curCap);
+    card.appendChild(currentRow(exercise));
+
+    els.exercises.appendChild(card);
+  });
+}
+
+// --- действия --------------------------------------------------------------
+
+function setAction(text, handler) {
+  if (mainButton) {
+    if (setAction.current) mainButton.offClick(setAction.current);
+    setAction.current = handler;
+    mainButton.setText(text);
+    mainButton.onClick(handler);
+    mainButton.enable();
+    mainButton.show();
+  } else {
+    els.action.hidden = false;
+    els.action.textContent = text;
+    els.action.onclick = handler;
+  }
+}
+
+function startWorkout() {
+  const value = parseFloat(String(els.weight.value).replace(',', '.'));
+  if (!Number.isFinite(value) || value < 30 || value > 300) {
+    return showError('Укажи сегодняшний вес — число от 30 до 300 кг.');
+  }
+
+  bodyWeight = Math.round(value * 10) / 10;
+  startedAt = new Date().toISOString();
+  showError('');
+  haptic('success');
+
+  renderWorkout();
+  window.scrollTo(0, 0);
+  setAction('Завершить тренировку', finishWorkout);
+}
+
+function finishWorkout() {
+  const exercises = [];
+
+  for (const card of els.exercises.querySelectorAll('.card')) {
+    const sets = [];
+    for (const input of card.querySelectorAll('input')) {
+      const raw = String(input.value).replace(',', '.').trim();
+      let weight = null;
+      if (raw !== '') {
+        weight = parseFloat(raw);
+        if (!Number.isFinite(weight) || weight < 0 || weight > 999) {
+          return showError('Вес должен быть числом от 0 до 999 кг.');
+        }
+        weight = Math.round(weight * 10) / 10;
+      }
+      sets.push({
+        n: parseInt(input.dataset.setNumber, 10),
+        r: parseInt(input.dataset.reps, 10),
+        w: weight,
+      });
+    }
+    exercises.push({ x: parseInt(card.dataset.exerciseId, 10), s: sets });
+  }
+
+  const payload = {
+    k: 'run',
+    i: plan.i,
+    s: startedAt,
+    f: new Date().toISOString(),
+    w: bodyWeight,
+    e: exercises,
+  };
+
+  const comment = els.comment.value.trim();
+  if (comment) payload.c = comment;
+
+  const json = JSON.stringify(payload);
+  if (json.length > 4096) {
+    return showError('Слишком много данных за раз (' + json.length + ' из 4096 байт).');
+  }
+
+  if (!tg) return showError('Страница открыта не из Telegram — отправить данные некуда.');
+  haptic('success');
+  tg.sendData(json);
+}
+
+document.getElementById('close').onclick = () => {
+  // Ничего не записываем: пользователь просто заглянул.
+  if (tg) tg.close(); else showError('Закрыть можно только внутри Telegram.');
+};
+
+// --- запуск ----------------------------------------------------------------
+
+function fail(text) {
+  els.fatal.hidden = false;
+  els.fatal.textContent = text;
+}
+
+try {
+  const raw = window.location.hash.slice(1);
+  if (!raw) throw new Error('в ссылке нет данных тренировки');
+  plan = decodePayload(raw);
+  if (!plan || !plan.i || !Array.isArray(plan.e)) throw new Error('данные повреждены');
+
+  els.complexTitle.textContent = plan.c;
+  els.dayTitle.textContent = plan.d;
+  renderPrevComment();
+  renderPreview();
+  els.app.hidden = false;
+  setAction('Начать тренировку', startWorkout);
+} catch (err) {
+  fail('Не удалось открыть тренировку: ' + err.message + '. Вернись в бота и открой день заново.');
+}
+</script>
+
+</body>
+</html>
