@@ -130,6 +130,7 @@
   <h2 id="dayTitle"></h2>
 
   <div id="prevComment"></div>
+  <div id="lastDate"></div>
 
   <div class="field" id="weightField">
     <label for="weight">Укажите свой сегодняшний вес, кг</label>
@@ -158,7 +159,7 @@ if (tg) { tg.ready(); tg.expand(); }
 
 const els = {};
 ['status','fatal','app','complexTitle','dayTitle','prevComment','weightField','weight',
- 'exercises','commentField','comment','bar','error','action','close']
+ 'exercises','commentField','comment','bar','error','action','close','lastDate']
   .forEach(id => els[id] = document.getElementById(id));
 
 let api = null;        // базовый адрес сервера бота
@@ -242,6 +243,21 @@ function renderPrevComment() {
   }
 }
 
+function renderLastDate() {
+  if (!plan.previous_finished_at) {
+    els.lastDate.className = 'note empty';
+    els.lastDate.textContent = 'Эту тренировку ты ещё не проводил.';
+    return;
+  }
+  // В базе время в UTC и без метки зоны — дописываем её, иначе дата уедет на часовой пояс.
+  const date = new Date(plan.previous_finished_at.replace(' ', 'T') + 'Z');
+  els.lastDate.className = 'note';
+  els.lastDate.innerHTML =
+    '<div class="cap">Дата последней тренировки на эту группу</div><span></span>';
+  els.lastDate.querySelector('span').textContent =
+    date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
 function exerciseCard(exercise, index) {
   const card = document.createElement('div');
   card.className = 'card';
@@ -272,10 +288,7 @@ function setsRow(exercise, mode) {
     const el = document.createElement('div');
     el.className = 'set' + (mode === 'prev' ? ' prev' : '');
 
-    if (mode === 'plan') {
-      el.innerHTML = '<span class="plan"></span>';
-      el.querySelector('.plan').textContent = set.set_number + ' × ' + set.reps;
-    } else if (mode === 'prev') {
+    if (mode === 'prev') {
       el.innerHTML = '<span class="plan"></span><span class="unit">кг</span>';
       el.querySelector('.plan').textContent =
         set.set_number + ' × ' + set.reps + ' — ' + (set.previous_weight || 0);
@@ -299,20 +312,11 @@ function caption(text) {
   return el;
 }
 
-function renderPreview() {
-  els.exercises.innerHTML = '';
-  plan.exercises.forEach((exercise, index) => {
-    const card = exerciseCard(exercise, index);
-    card.appendChild(caption('Подходы / повторения'));
-    card.appendChild(setsRow(exercise, 'plan'));
-    els.exercises.appendChild(card);
-  });
-}
-
 // --- экран 2: тренировка идёт ---------------------------------------------
 
 function renderWorkout() {
   els.weightField.hidden = true;              // вес уже записан, больше не показываем
+  els.lastDate.hidden = true;                 // дата прошлой — справка для старта
   els.commentField.hidden = false;
   if (!plan.previous_comment) els.prevComment.innerHTML = '';
 
@@ -361,7 +365,12 @@ function setBusy(on) {
 async function startWorkout() {
   if (busy) return;
 
-  const value = parseFloat(String(els.weight.value).replace(',', '.'));
+  const raw = String(els.weight.value).trim();
+  if (!raw) {
+    return showError('Заполните вес, для того чтобы начать тренировку.');
+  }
+
+  const value = parseFloat(raw.replace(',', '.'));
   if (!Number.isFinite(value) || value < 30 || value > 300) {
     return showError('Укажи сегодняшний вес — число от 30 до 300 кг.');
   }
@@ -472,7 +481,7 @@ function readParams() {
     els.complexTitle.textContent = plan.workout_title;
     els.dayTitle.textContent = plan.day_title;
     renderPrevComment();
-    renderPreview();
+    renderLastDate();
 
     els.status.hidden = true;
     els.app.hidden = false;
