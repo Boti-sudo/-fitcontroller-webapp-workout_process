@@ -262,6 +262,7 @@ function exerciseCard(exercise, index) {
   const card = document.createElement('div');
   card.className = 'card';
   card.dataset.exerciseId = exercise.exercise_id;
+  card.dataset.exerciseName = exercise.name;
 
   const head = document.createElement('div');
   head.className = 'card-head';
@@ -401,27 +402,37 @@ function collectSets() {
     const exerciseId = parseInt(card.dataset.exerciseId, 10);
     for (const input of card.querySelectorAll('input')) {
       const raw = String(input.value).replace(',', '.').trim();
-      let weight = null;
-      if (raw !== '') {
-        weight = parseFloat(raw);
-        if (!Number.isFinite(weight) || weight < 0 || weight > 999) return null;
-        weight = Math.round(weight * 10) / 10;
+
+      // Пустое поле — подход без результата. Тренировку с такими не закрываем:
+      // иначе в журнал уедет дыра, и следующая тренировка покажет ноль вместо веса.
+      if (raw === '') {
+        input.focus();
+        return { error: 'Заполни вес во всех подходах — пропущено «'
+          + card.dataset.exerciseName + '», подход ' + input.dataset.setNumber + '.' };
       }
+
+      const weight = parseFloat(raw);
+      if (!Number.isFinite(weight) || weight < 0 || weight > 999) {
+        input.focus();
+        return { error: 'Вес должен быть числом от 0 до 999 кг.' };
+      }
+
       sets.push({
         exercise_id: exerciseId,
         set_number: parseInt(input.dataset.setNumber, 10),
-        weight_kg: weight,
+        weight_kg: Math.round(weight * 10) / 10,
       });
     }
   }
-  return sets;
+  return { sets: sets };
 }
 
 async function finishWorkout() {
   if (busy) return;
 
-  const sets = collectSets();
-  if (sets === null) return showError('Вес должен быть числом от 0 до 999 кг.');
+  const collected = collectSets();
+  if (collected.error) return showError(collected.error);
+  const sets = collected.sets;
 
   showError('');
   setBusy(true);
