@@ -7,10 +7,12 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root {
+    color-scheme: light dark;
     --bg: var(--tg-theme-bg-color, #ffffff);
     --text: var(--tg-theme-text-color, #14181f);
     --hint: var(--tg-theme-hint-color, #77818f);
     --card: var(--tg-theme-secondary-bg-color, #f2f4f7);
+    --field-bg: var(--tg-theme-secondary-bg-color, #ffffff);
     --accent: var(--tg-theme-button-color, #2f80ed);
     --accent-text: var(--tg-theme-button-text-color, #ffffff);
     --danger: #d64545;
@@ -38,10 +40,20 @@
     padding: 10px 12px;
     border: 1px solid var(--line);
     border-radius: 10px;
-    background: var(--bg);
+    background: var(--field-bg);
     color: var(--text);
+    /* Safari/iOS красит текст поля системным цветом и игнорирует color —
+       на тёмной теме получались белые буквы на белом фоне. */
+    -webkit-text-fill-color: var(--text);
+    opacity: 1;
     font-size: 15px;
     font-family: inherit;
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: var(--hint);
+    -webkit-text-fill-color: var(--hint);
+    opacity: 1;
   }
 
   input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -94,7 +106,17 @@
 
   .set.prev { opacity: .75; }
   .set .plan { color: var(--hint); }
-  .set input { width: 48px; padding: 3px 4px; text-align: center; border-radius: 6px; font-size: 13px; }
+  .set input {
+    width: 48px;
+    padding: 3px 4px;
+    text-align: center;
+    border-radius: 6px;
+    font-size: 13px;
+    /* Плашка подхода уже на --bg, поэтому поле внутри делаем контрастной секцией. */
+    background: var(--card);
+    color: var(--text);
+    -webkit-text-fill-color: var(--text);
+  }
   .set .unit { color: var(--hint); font-size: 12px; }
 
   button { font: inherit; font-family: inherit; cursor: pointer; border: none; border-radius: 10px; }
