@@ -594,6 +594,12 @@ function readParams() {
     els.app.hidden = false;
     els.bar.hidden = false;
 
+    if (plan.blocked_by) {
+      // Две тренировки одновременно не ведём: иначе веса разъезжаются по двум журналам.
+      return fail('Сначала заверши тренировку «' + plan.blocked_by.workout_title + ' / ' +
+        plan.blocked_by.day_title + '». Открой её в боте кнопкой «Продолжить».');
+    }
+
     const active = plan.active_session;
     if (active) {
       // Тренировка уже идёт: возвращаем человека туда, где он остановился.
