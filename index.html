@@ -24,7 +24,7 @@
 
   body {
     margin: 0;
-    padding: 16px 16px 92px;
+    padding: 16px 16px 84px;
     background: var(--bg);
     color: var(--text);
     font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -124,21 +124,25 @@
   .bar {
     position: fixed;
     left: 0; right: 0; bottom: 0;
-    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
     background: var(--bg);
     border-top: 1px solid var(--line);
     display: grid;
-    gap: 8px;
+    gap: 6px;
   }
 
-  .btn-primary { background: var(--accent); color: var(--accent-text); padding: 12px; font-weight: 600; }
-  .btn-secondary { background: var(--card); color: var(--text); padding: 12px; }
+  /* Пустые строки статуса убираем совсем: иначе они держат высоту и отступ
+     сетки, панель разрастается и перекрывает поля ввода на телефоне. */
+  .bar .error:empty, .bar .autosave:empty { display: none; }
+
+  .btn-primary { background: var(--accent); color: var(--accent-text); padding: 10px; font-weight: 600; }
+  .btn-secondary { background: var(--card); color: var(--text); padding: 10px; }
   button:disabled { opacity: .55; cursor: default; }
 
-  .error { color: var(--danger); font-size: 13px; min-height: 18px; }
+  .error { color: var(--danger); font-size: 13px; }
   .section-title { font-size: 13px; color: var(--hint); margin: 20px 0 8px; }
   .status { color: var(--hint); font-size: 14px; }
-  .autosave { color: var(--hint); font-size: 12px; min-height: 15px; margin-bottom: 4px; }
+  .autosave { color: var(--hint); font-size: 12px; }
   .autosave.bad { color: var(--danger); }
   .fatal { color: var(--danger); font-size: 14px; }
   .done { color: var(--ok); font-size: 15px; font-weight: 600; }
@@ -397,14 +401,25 @@ function setBusy(on) {
 // Тренировка идёт час-два, и мини-апп закроется от любого звонка. Поэтому веса
 // уезжают на сервер по ходу дела, а не только по кнопке «Завершить».
 const AUTOSAVE_DELAY = 1500;
+const SAVING_TEXT = 'Сохраняю…';
 
 let autosaveTimer = null;
 let autosaveRunning = false;
 let autosaveAgain = false;
 
+const MARK_HIDE_DELAY = 3000;
+let markHideTimer = null;
+
 function autosaveMark(text, bad) {
   els.autosave.textContent = text || '';
   els.autosave.className = 'autosave' + (bad ? ' bad' : '');
+
+  // Хорошая новость живёт пару секунд и уходит: строка статуса не должна
+  // навсегда занимать место над полями. Ошибка висит, пока не исправят.
+  clearTimeout(markHideTimer);
+  if (text && !bad && text !== SAVING_TEXT) {
+    markHideTimer = setTimeout(() => { els.autosave.textContent = ''; }, MARK_HIDE_DELAY);
+  }
 }
 
 function currentSets() {
@@ -431,7 +446,7 @@ async function autosave() {
   if (autosaveRunning) { autosaveAgain = true; return; }
 
   autosaveRunning = true;
-  autosaveMark('Сохраняю…');
+  autosaveMark(SAVING_TEXT);
   try {
     await callApi('/api/session/progress', {
       method: 'POST',
