@@ -116,6 +116,8 @@
   .error { color: var(--danger); font-size: 13px; min-height: 18px; }
   .section-title { font-size: 13px; color: var(--hint); margin: 20px 0 8px; }
   .status { color: var(--hint); font-size: 14px; }
+  .autosave { color: var(--hint); font-size: 12px; min-height: 15px; margin-bottom: 4px; }
+  .autosave.bad { color: var(--danger); }
   .fatal { color: var(--danger); font-size: 14px; }
   .done { color: var(--ok); font-size: 15px; font-weight: 600; }
 </style>
@@ -148,6 +150,7 @@
 
 <div class="bar" id="bar" hidden>
   <div class="error" id="error"></div>
+  <div class="autosave" id="autosave"></div>
   <button class="btn-secondary" id="close">Закрыть</button>
   <button class="btn-primary" id="action" hidden></button>
 </div>
@@ -159,12 +162,13 @@ if (tg) { tg.ready(); tg.expand(); }
 
 const els = {};
 ['status','fatal','app','complexTitle','dayTitle','prevComment','weightField','weight',
- 'exercises','commentField','comment','bar','error','action','close','lastDate']
+ 'exercises','commentField','comment','bar','error','action','close','lastDate','autosave']
   .forEach(id => els[id] = document.getElementById(id));
 
 let api = null;        // базовый адрес сервера бота
 let dayId = null;
 let plan = null;
+let restored = {};    // веса незакрытой тренировки: 'exerciseId:setNumber' -> вес
 let sessionId = null;
 let busy = false;
 
@@ -299,7 +303,12 @@ function setsRow(exercise, mode) {
         '<input type="number" inputmode="decimal" min="0" max="999" step="0.5" placeholder="0">' +
         '<span class="unit">кг</span>';
       el.querySelector('.plan').textContent = set.set_number + ' × ' + set.reps + ' —';
-      el.querySelector('input').dataset.setNumber = set.set_number;
+      const input = el.querySelector('input');
+      input.dataset.setNumber = set.set_number;
+
+      // Тренировку могли прервать на середине — возвращаем, что уже вводили.
+      const saved = restored[exercise.exercise_id + ':' + set.set_number];
+      if (saved !== undefined && saved !== null) input.value = saved;
     }
     wrap.appendChild(el);
   });
@@ -360,6 +369,69 @@ function setBusy(on) {
     els.action.disabled = on;
   }
 }
+
+// --- автосохранение --------------------------------------------------------
+
+// Тренировка идёт час-два, и мини-апп закроется от любого звонка. Поэтому веса
+// уезжают на сервер по ходу дела, а не только по кнопке «Завершить».
+const AUTOSAVE_DELAY = 1500;
+
+let autosaveTimer = null;
+let autosaveRunning = false;
+let autosaveAgain = false;
+
+function autosaveMark(text, bad) {
+  els.autosave.textContent = text || '';
+  els.autosave.className = 'autosave' + (bad ? ' bad' : '');
+}
+
+function currentSets() {
+  const sets = [];
+  for (const card of els.exercises.querySelectorAll('.card')) {
+    const exerciseId = parseInt(card.dataset.exerciseId, 10);
+    for (const input of card.querySelectorAll('input')) {
+      const raw = String(input.value).replace(',', '.').trim();
+      const weight = raw === '' ? null : parseFloat(raw);
+      // Недописанное число не отправляем: сервер такой вес не примет.
+      if (weight !== null && (!Number.isFinite(weight) || weight < 0 || weight > 999)) continue;
+      sets.push({
+        exercise_id: exerciseId,
+        set_number: parseInt(input.dataset.setNumber, 10),
+        weight_kg: weight === null ? null : Math.round(weight * 10) / 10,
+      });
+    }
+  }
+  return sets;
+}
+
+async function autosave() {
+  if (!sessionId) return;
+  if (autosaveRunning) { autosaveAgain = true; return; }
+
+  autosaveRunning = true;
+  autosaveMark('Сохраняю…');
+  try {
+    await callApi('/api/session/progress', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, sets: currentSets() }),
+    });
+    autosaveMark('Сохранено');
+  } catch (err) {
+    // Не мешаем тренироваться: данные останутся в полях, отправим со следующей правкой.
+    autosaveMark('Не сохранено — проверь связь', true);
+  }
+  autosaveRunning = false;
+
+  if (autosaveAgain) { autosaveAgain = false; autosave(); }
+}
+
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(autosave, AUTOSAVE_DELAY);
+}
+
+// Одного слушателя на контейнер хватает на все поля, включая перерисованные.
+els.exercises.addEventListener('input', scheduleAutosave);
 
 // --- действия --------------------------------------------------------------
 
@@ -435,6 +507,8 @@ async function finishWorkout() {
   const sets = collected.sets;
 
   showError('');
+  clearTimeout(autosaveTimer);
+  autosaveMark('');
   setBusy(true);
   try {
     await callApi('/api/session/finish', {
@@ -497,7 +571,20 @@ function readParams() {
     els.status.hidden = true;
     els.app.hidden = false;
     els.bar.hidden = false;
-    setAction('Начать тренировку', startWorkout);
+
+    const active = plan.active_session;
+    if (active) {
+      // Тренировка уже идёт: возвращаем человека туда, где он остановился.
+      sessionId = active.session_id;
+      active.sets.forEach(item => {
+        restored[item.exercise_id + ':' + item.set_number] = item.weight_kg;
+      });
+      renderWorkout();
+      autosaveMark('Тренировка восстановлена');
+      setAction('Завершить тренировку', finishWorkout);
+    } else {
+      setAction('Начать тренировку', startWorkout);
+    }
   } catch (err) {
     fail('Не удалось загрузить тренировку. ' + networkHint(err));
   }
